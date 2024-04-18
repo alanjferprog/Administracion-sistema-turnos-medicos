@@ -1,0 +1,401 @@
+= Trabajo Práctico - Bases de Datos I - Primer Semestre 2023
+Victoria Altamirano <victorialt13@gmail.com>; Alan Fernández <alanfernadrz765@gmail.com>; Natalia_Elizabeth Cabezas <naty.e_94@hotmail.com>
+v1, {docdate}. Docentes Daniel Bertaccini y Hernán rondelli (COM-08)
+:title-page:
+:numbered:
+:source-highlighter: coderay
+:tabsize: 4
+
+// El texto debe ser breve, conciso, simple, y directo. Se debe incluir
+// sólo lo relevante que ayude a entender el trabajo práctico.
+
+// Se recomiendan oraciones y párrafos cortos.
+
+// Por último, no olvidar utilizar signos de puntuación y checkear la
+// ortografía.
+
+== Introducción
+// Descripción del trabajo práctico. Aquí se puede copiar textual el [ó
+// parte del] enunciado del trabajo práctico de considerarse necesario.
+El presente trabajo consiste en modelar una base de datos que simula la administración de un sistema de turnos médicos y que permite almacenar y manipular la información al respecto. Para ello se solicita incluir diferentes funciones y/o triggers, los cuales representan las acciones necesarias que este proyecto necesita para cumplir con sus objetivos. Ademas, todo el código debe ser capaz de ejecutarse desde una aplicación CLI escrita en GO.
+Por ultimo, se solicita guardar determinada información en una base de datos NoSQL basada en Json (utilizando BoltDB), lo que nos permite comparar el modelo relacional con uno no relacional NOSQL.
+
+== Descripción
+
+// En esta sección pueden incluirse las dificultades que tuvieron, las
+// soluciones encontradas, las decisiones que se fueron tomando a lo largo
+// del trabajo práctico, y las cuestiones de diseño que consideren
+// importantes.
+
+// También, se puede incluir una descripción general del programa—cómo
+// funciona.
+
+Inicializamos el trabajo dividiendo las tareas (la creacion de tablas-y sus respectivas Pk's y Fk's- sus insert's y las funciones solicitadas) sin olvidar el caracter integral del proyecto. Por ello promovimos la asistencia constante entre los miembros del grupo, así como la constante consulta a las distintas documentaciones oficiales y el compartir de dicha información, siendo la comunicación indispensable para el desarrollo del proyecto.
+
+En lineas del diseño solicitado en la consigna, en el archivo adm_turnos_medicos.go se decicidió separar la creación de las funciones y sólo realizar el llamado en la funcion main, a fin de presentar un código claro y organizado. 
+
+Entre las dificultades que pudimos encontrar podemos mencionar:
+
+* Trabajar con go, un lenguaje desconocido hasta el momento, fue un
+reto porque hay que abandonar la zona de confort que es programar en un
+lenguaje donde tengamos mas cancha.
+
+* Trabajar bajo presion debido a que el periodo de entrega del trabajo es
+corto.
+
+* Trabajar con json y bboltDB, ya que todavia no habiamos trabajdo
+tampoco con ellos.
+
+* Para obtener la ultima pk de las tablas se pensó en utilizar una función auxiliar para traer esa misma, ya que era necesario para el ingreso de datos nuevos. Una solución fue utilizar serial (de tipo int), el cual se utilizó para el incremento automático de las pk de las relaciones error y turno.
+
+* Para comparar los días de la semana al realizar la función generar_turnos_disponibles(anio int, mes int) se optó en primer lugar por la función disponible en postgress _to_char(timestamp, text)_, el cual retorna tipo text. Al solicitar el nombre del día, si bien probando la función to_char se obtenía lo esperado, no al comparar esta variable con otra de tipo text igual a ella. Ejemplo: 
+_to_char('2023-06-12 08:00:00', 'day')_ -----> retorna _'monday'_
+_select to_char('2023-06-12 08:00:00', 'day') = 'monday'_  -----> retorna _false_
+La solución que encontramos fue implementar otra función de postgres _extract(isodow from timestamp)_, donde la consulta del día devuelve un int, y en este tipo de dato fue que se realizó la comparación
+
+== Implementación
+
+// En esta sección se incluye el código fuente correctamente formateado—y
+// comentado, si corresponde.
+
+// Además, por cada fragmento de código
+// relevante—i.e. función, método, procedimiento—se debe dar una
+// breve descripción, decir qué hace, y especificar los parámetros que
+// toma la función/método/procedimiento, junto con los valores que devuelve
+// ó modifica.
+
+// _No debería incluirse el código de librerías/frameworks que se
+// utilicen—a no ser que sea absolutamente necesario._
+A continuación se realizará una breve descripción de las funciones implementadas:
+       
+* _generar_turnos_disponibles(anio int, mes int)_ . Esta función toma como parámetros dos int's, que representan el año y el mes con los que se trabajará. Si existe algún elemento en la tabla con el mes y año ingresados por parámetro la función retorna false. En caso contrario, se da valor al primer y último día del mes solicitado recorriendo estos en orden y cargando los turnos correspondientes al día en el que se encuentra a partir de la relación agenda. Una vez finalizada la carga retorna true.
+[source, c]
+----
+create function generar_turnos_disponibles(anio int, mes int) returns boolean as $$
+declare
+	t_interval interval;
+	t timestamp;
+	v record;
+	first_day date;
+	last_day date;
+	actual_day date;
+	day_week int;
+	day_agenda int;
+	turno_existente turno%rowtype;
+	
+begin 
+	select * into turno_existente from turno t where extract(month from t.fecha) = mes and extract(year from t.fecha) = anio;
+	if found then 
+		return false;	
+	end if;	
+
+	first_day := dar_primer_dia_mes(anio,mes);
+	last_day := dar_ultimo_dia_mes(anio,mes);
+	actual_day := first_day;
+	day_week := 0;
+	day_agenda := 0;
+	t_interval:= '0 hour';
+	t := '1900-01-01 00:00:00';
+
+	while actual_day <= last_day loop
+		day_week = consultar_dia_semana(actual_day);
+		for v in select * from agenda loop
+			day_agenda = v.dia;
+			if day_week = day_agenda then 
+				t_interval = v.duracion_turno;
+				t = actual_day + v.hora_desde;
+				while t<(actual_day + v.hora_hasta) loop
+					insert into turno values(default,t,v.nro_consultorio,v.dni_medique,null,null,null,null,null,null,'disponible');
+					t = t + t_interval;
+				end loop;
+				
+			end if;
+			
+		end loop;
+			actual_day = actual_day + interval '1 day';
+
+	end loop;
+	return true;
+	
+end;
+$$language plpgsql;
+----
+      
+* _reserva_de_turno(nro_his_clinica int, dni_med int, fecha_ingresada date, hora_ingresada time)_ . Esta función toma como parámetros número de historia clínica del paciente, el dni del médique, una fecha y una hora. A partir de la adeshión de la fecha y la hora en una variable timestamp asociada al turno que se solicitará. Luego de asegurarnos de que no presenta ningún error (como médico y paciente vàlidos,turno disponible, etc), se settean los datos en el turno correspondiente al médico, la fecha y hora. La función devuelve true si fue posible asignar el turno.
+[source, c]
+----
+create function reserva_de_turno(nro_his_clinica int, dni_med int, fecha_ingresada date, hora_ingresada time) returns boolean as $$
+	declare
+		fecha_hora timestamp;
+		medique_select medique%rowtype;
+		paciente_select paciente%rowtype;
+		cobertura_select cobertura%rowtype;
+		turno_select turno%rowtype;
+		turnos_reservados int;
+
+	begin
+		fecha_hora := fecha_ingresada + hora_ingresada;
+		
+		select * into medique_select from medique m where m.dni_medique = dni_med;
+		
+		if not found then 
+			insert into error values(default, fecha_hora, null , null, null, 'reserva', current_timestamp, '?dni de medique no valida');
+			return false;
+		end if;
+		
+		select * into paciente_select from paciente p where p.nro_paciente = nro_his_clinica;
+		
+		if not found then 
+			insert into error values(default, fecha_hora, null , dni_med, null, 'reserva', current_timestamp, '?nro de historia historia clinica no valido');
+			return false;
+		end if; 
+		
+		select * into cobertura_select from cobertura c where c.dni_medique = dni_med and c.nro_obra_social = paciente_select.nro_obra_social;
+		
+		if not found then
+			insert into error values(default, fecha_hora, null , dni_med, nro_his_clinica, 'reserva', current_timestamp, '?obra social de paciente no atendida por le medique');
+			return false;
+		end if; 
+
+		select * into turno_select from turno t where t.fecha = fecha_hora and t.estado = 'disponible';
+		
+		if not found then
+			insert into error values(default, fecha_hora, null , dni_med, nro_his_clinica, 'reserva', current_timestamp, '?turno inexistente o no disponible');
+			return false;
+		end if;
+		
+		turnos_reservados := count(*) from turno t where t.estado = 'reservado' and t.nro_paciente = nro_his_clinica;
+		
+		if turnos_reservados >= 5 then
+			insert into error values(default, fecha_hora, null , dni_med, nro_his_clinica, 'reserva', current_timestamp, '?supera el limite de reserva de turnos');
+			return false;
+		end if;
+		
+		update turno t set nro_paciente = nro_his_clinica, nro_obra_social_consulta = paciente_select.nro_obra_social, nro_afiliade_consulta = paciente_select.nro_afiliade,
+		monto_paciente = cobertura_select.monto_paciente, monto_obra_social = cobertura_select.monto_obra_social, f_reserva = current_timestamp, estado = 'reservado'
+		where t.nro_turno = turno_select.nro_turno;
+		
+		return true;
+
+	end;
+
+$$language plpgsql;
+----
+
+* _cancelar_turnos(dni_medique int, fecha_desde date, fecha_hasta date)_ . Esta función toma como parámetros DNI de medique, las fechas desde y hasta, y retorna un int asociados a la cantidad de turnos cancelados, y además actualizando el estado de los turnos a cancelado. En la que una vez finalizada la función, se agrega estos mismos turnos cancelados a la tabla reprogramación.
+[source, c]
+----
+create function cancelar_turnos(dni_medique int, fecha_desde date, fecha_hasta date) returns int as $$
+declare
+	cant_turnos_cancelados int;
+	v record;
+	f_desde timestamp;
+	f_hasta timestamp;
+	paciente_select paciente%rowtype;
+	medique_select medique%rowtype;
+
+begin
+	cant_turnos_cancelados := 0;
+	f_desde := fecha_desde + interval '0 hour' + '0 minute' + '0 second';
+	f_hasta := fecha_hasta + interval '23 hours' + '59 minutes' + '59 second';
+	for v in select * from turno loop
+		if v.dni_medique = dni_medique and (v.estado = 'disponible' or v.estado ='reservado') and v.fecha >= f_desde and v.fecha <= f_hasta then
+			update turno t set estado = 'cancelado' where t.nro_turno = v.nro_turno; 
+			cant_turnos_cancelados = cant_turnos_cancelados + 1;
+			select * into paciente_select from paciente p where p.nro_paciente = v.nro_paciente;
+			select * into medique_select from medique m where m.dni_medique = v.dni_medique;
+
+			insert into reprogramacion values(v.nro_turno, paciente_select.nombre,paciente_select.apellido,paciente_select.telefono,paciente_select.email, medique_select.nombre, medique_select.apellido, 'pendiente');
+
+		end if;
+
+	end loop;
+
+	return cant_turnos_cancelados;
+
+end;
+
+$$ language plpgsql;
+----
+
+* _atencion_turno(num_turno int)_ . Esta función recibe como parámetros un número de turno, y luego se procede a marcarlo como atendido, en el que retornara true en el caso de que se realice la función correctamente. Para los casos que retorna false son que el número de turno no exista, que el turno esté en estado distinto a reservado, y que la fecha del turno no sea la fecha actual.
+ [source, c]
+----
+create function atencion_turno(num_turno int) returns boolean as $$
+declare
+	turno_buscado turno%rowtype;
+
+begin
+	select * into turno_buscado from turno t where t.nro_turno = nro_turno;
+	
+	if not found then
+		insert into error values(default, null, null, null, null, 'atención', current_timestamp, '?nro de turno no válido');
+		return false;
+	end if;
+
+	if turno_buscado.estado != 'reservado' then
+		insert into error values(default, turno_buscado.fecha, t.nro_consultorio, t.dni_medique, t.nro_paciente, 'atención', current_timestamp, '?turno no reservado');
+		return false;
+	end if;
+
+	if (date(turno_buscado.fecha)) != (date(now())) then
+		insert into error values(default, turno_buscado.fecha, t.nro_consultorio, t.dni_medique, t.nro_paciente, 'atención', current_timestamp, '?turno no corresponde a la fecha del día');
+		return false;
+	end if;
+
+	update turno t set estado = 'atendido' where t.nro_turno = turno_buscado.nro_turno;
+	return true;
+
+end;
+
+$$ language plpgsql;
+
+----
+
+* _liquidacion_por_obra_social(año int, mes int, id_obra_social int) _ . Esta funcion recibe como parametros un año, un mes y el id de una obra social. Luego busca los turnos que hayan sido atendidos en el periodo de tiempo deseado. Cada turno es cargado a la tabla liquidacion_detalle y la se va sumando los montos a llegar a el ultimo turno y conseguir el monto final. Una vez recorridos todos los turnos se llena la tabla liquidacion_cabecera con los datos obtenidos.
+
+----
+create function liquidacion_por_obra_social(año int, mes int, id_obra_social int) returns void as $$
+declare
+	nro_liquidacion_detalle int;
+	el_paciente paciente%rowtype;
+	el_medique medique%rowtype;
+    el_monto_final int;    
+    el_turno turno%rowtype;
+    el_nro_liquidacion int;
+    primera_fecha_liquidacion date;
+    ultima_fecha_liquidacion date;
+begin
+	nro_liquidacion_detalle := 1;
+	el_monto_final :=0;
+	el_nro_liquidacion := obtener_ultima_liquidacion(); 
+	insert into liquidacion_cabecera values(default, 
+	null, null, null, null);
+    for el_turno in select * from turno loop
+		if extract(year from el_turno.fecha) = año and extract(month from el_turno.fecha) = mes and el_turno.estado = 'atendido' and el_turno.nro_obra_social_consulta = id_obra_social then		   
+			el_paciente := obtener_paciente(el_turno);
+			el_medique := obtener_medique(el_turno);
+			if nro_liquidacion_detalle=1 then 	
+				primera_fecha_liquidacion=date(el_turno.fecha);	
+			end if;
+			insert into liquidacion_detalle values(el_nro_liquidacion, nro_liquidacion_detalle, el_turno.fecha, el_turno.nro_afiliade_consulta, el_paciente.dni_paciente, el_paciente.nombre, el_paciente.apellido, el_turno.dni_medique, el_medique.nombre, el_medique.apellido, el_medique.especialidad, el_turno.monto_obra_social);
+			update turno t set estado='liquidado' where nro_turno = el_turno.nro_turno; 
+			el_monto_final = el_monto_final + el_turno.monto_obra_social;
+			nro_liquidacion_detalle = nro_liquidacion_detalle + 1;
+			ultima_fecha_liquidacion= date(el_turno.fecha);
+			end if;
+    end loop;
+	
+	update liquidacion_cabecera l set nro_obra_social = el_turno.nro_obra_social_consulta,desde = primera_fecha_liquidacion, hasta = ultima_fecha_liquidacion, total = el_monto_final where nro_liquidacion = el_nro_liquidacion;
+end;
+$$ language plpgsql;
+
+--Funcion Auxiliar 1
+create function obtener_ultimo_turno(fecha date) returns int as $$
+declare
+	el_turno record;
+	numero_turno int;
+begin
+	for el_turno in select * from turno loop
+		numero_turno := el_turno.nro_turno;
+	end loop; 
+	return numero_turno;
+end;	
+$$ language plpgsql;
+
+--Funcion Auxiliar 2
+create function crear_cuerpo_mail(turno record, medique record) returns text as $$
+declare 
+	texto text;
+begin
+	texto := 'Fecha turno: ' || turno.fecha || '. Numero consultorio: ' || turno.nro_consultorio || '. Medique: ' || medique.nombre || ' ' || medique.apellido || '.';
+	return texto;
+end;
+$$ language plpgsql;
+
+--Funcion Auxiliar 3
+create function obtener_medique(turno record) returns record as $$
+declare
+	el_medique record;
+begin
+	select * into el_medique from medique where 
+	dni_medique = turno.dni_medique;
+	return el_medique;
+end;
+$$ language plpgsql;
+--Funcion Auxiliar 4
+create function obtener_paciente(turno record) returns record as $$
+declare
+	el_paciente record;
+begin
+	select * into el_paciente from paciente where 
+	nro_paciente = turno.nro_paciente;
+	return el_paciente;
+end;
+$$ language plpgsql;
+--Funcion Auxiliar 5
+create function obtener_ultima_liquidacion() returns int as $$
+declare
+	t record;
+	res int;
+begin
+	res =1;
+	for t in select * from liquidacion_cabecera loop
+		res := res + 1;
+	end loop; 
+	return res;
+end;	
+$$ language plpgsql; 
+----
+
+
+* _envio_email_reservaciones_cancelaciones() _ . Esta funcion no recibe parametros y es activada desde un trigger. Cada vez que un a un turno le sea modificado el atributo de estado se llamara a la funciòn para que revise si la modificacion del turno es para reservarlo o cancelarlo. En cualquiera de estos casos enviar aun mail informandole al paciente del turno con los datos correspondientes al mismo.
+
+----
+create function envio_email_reservaciones_cancelaciones() returns trigger as $$
+declare
+	el_nro_turno int;
+	el_turno2 record;
+	el_paciente2 record;
+	el_medique2 record;
+	fecha_hoy date;
+	el_cuerpo2 text;
+begin
+	fecha_hoy := current_date;
+	el_nro_turno := obtener_ultimo_turno(fecha_hoy);
+	select * into el_turno2 from turno where nro_turno = el_nro_turno;
+	
+	el_paciente2 := obtener_paciente(el_turno2);
+	el_medique2 := obtener_medique(el_turno2);
+	el_cuerpo2 := crear_cuerpo_mail(el_turno2, el_medique2);
+	
+	if el_turno2.estado = 'reservado' then
+		insert into envio_email values(default, fecha_hoy, el_paciente2.email, 'Reserva de turno', el_cuerpo2, fecha_hoy, 'enviado');
+	end if;
+
+	if el_turno2.estado ='cancelado' then
+		insert into envio_email values(default, fecha_hoy, el_paciente2.email, 'Cancelacion de turno', el_cuerpo2, fecha_hoy, 'enviado');
+	end if;
+return new;
+end;
+$$ language plpgsql;
+
+Creacion del Trigger
+create trigger envio_email_reservaciones_cancelaciones_trg
+before update of estado on turno
+for each row
+execute procedure envio_email_reservaciones_cancelaciones();
+
+----
+
+== Conclusiones
+
+// Aquí van algunas reflexiones acerca del proceso de desarrollo del
+// trabajo realizado, y de los resultados obtenidos.
+
+// También se puede incluir una conclusión final de producto terminado.
+
+// Pueden incluirse lecciones aprendidas durante el desarrollo del trabajo.
+A pesar de las dificultades encontradas, el trabajo pudo llevarse a delante, integrando contenidos aprendidos en clases.
+La obligación de recurrir solo a la documentación oficial nos permitió eliminar un prejuicio: no solo es de fácil acceso, sino que además es de fácil lectura y comprensión, no siendo el idioma un impedimento.
+Por otro lado, el trabajo grupal nos muestra que tanto la comunicacion como la asistencia constante entre los miembros permite un mejor resultado, así como un trayecto de mayor enriquecimiento y aprendizaje. 
